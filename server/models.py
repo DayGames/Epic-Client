@@ -34,7 +34,40 @@ class App(Base):
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User")
 
+    media = relationship("Media", cascade="all, delete-orphan", back_populates="app")
+    dlc = relationship("Dlc", cascade="all, delete-orphan", back_populates="app")
+
     @property
     def has_icon(self) -> bool:
         """Convenience flag the API exposes so clients know whether to fetch an icon."""
         return bool(self.icon_filename)
+
+    @property
+    def owner_username(self) -> str:
+        return self.owner.username if self.owner else "unknown"
+
+
+class Media(Base):
+    """A screenshot (image) or trailer (video) belonging to an app."""
+    __tablename__ = "media"
+
+    id = Column(Integer, primary_key=True, index=True)
+    app_id = Column(Integer, ForeignKey("apps.id"))
+    filename = Column(String, nullable=False)
+    kind = Column(String, default="image")  # "image" or "video"
+
+    app = relationship("App", back_populates="media")
+
+
+class Dlc(Base):
+    """Downloadable content for an app — just another .zip."""
+    __tablename__ = "dlc"
+
+    id = Column(Integer, primary_key=True, index=True)
+    app_id = Column(Integer, ForeignKey("apps.id"))
+    name = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    size_bytes = Column(Integer, default=0)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    app = relationship("App", back_populates="dlc")
