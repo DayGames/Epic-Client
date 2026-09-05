@@ -52,7 +52,9 @@ def upload_app(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Logged-in users upload an installer (+ optional icon image)."""
+    """Logged-in users upload a game as a .zip (+ optional icon image)."""
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="The game file must be a .zip archive")
     stored_name, size = _save_upload(file)
 
     icon_name = None

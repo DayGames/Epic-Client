@@ -1,6 +1,7 @@
 """Main store window: browse (with icons), download, open, and upload apps."""
 import os
 import sys
+import zipfile
 import subprocess
 
 from PySide6.QtWidgets import (
@@ -25,13 +26,31 @@ def human_size(n: int) -> str:
 
 
 def open_file(path: str):
-    """Launch a downloaded file with the OS default handler."""
+    """Launch a file OR folder with the OS default handler."""
     if sys.platform.startswith("win"):
         os.startfile(path)  # noqa: type ignore  (Windows only)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", path])
     else:
         subprocess.Popen(["xdg-open", path])
+
+
+def extract_zip(zip_path: str) -> str:
+    """Unpack a downloaded .zip next to it. Returns the extracted folder path."""
+    folder = os.path.splitext(zip_path)[0]  # drop the .zip extension
+    os.makedirs(folder, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(folder)
+    return folder
+
+
+def find_exe(folder: str) -> str | None:
+    """Find the first .exe inside an extracted game folder, if any."""
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            if name.lower().endswith(".exe"):
+                return os.path.join(root, name)
+    return None
 
 
 class StoreWindow(FramelessWindow):
@@ -176,7 +195,13 @@ class StoreWindow(FramelessWindow):
         self.detail_icon.setPixmap(pm)
 
         self.download_btn.setEnabled(True)
-        self.open_btn.setEnabled(app["id"] in self.downloaded)
+        target = self.downloaded.get(app["id"])
+        if target:
+            self.open_btn.setEnabled(True)
+            self.open_btn.setText("Play" if target.lower().endswith(".exe") else "Open folder")
+        else:
+            self.open_btn.setEnabled(False)
+            self.open_btn.setText("Open")
 
     # ---- actions ----
     def download(self):
@@ -187,7 +212,12 @@ class StoreWindow(FramelessWindow):
         self.download_btn.setEnabled(False)
         self.download_btn.setText("Downloading…")
         try:
-            path = self.api.download_app(app["id"], f"{app['name']}-{app['version']}")
+            zip_path = self.api.download_app(app["id"], f"{app['name']}-{app['version']}.zip")
+            self.download_btn.setText("Extracting…")
+            folder = extract_zip(zip_path)
+        except zipfile.BadZipFile:
+            QMessageBox.critical(self, "Download failed", "The downloaded file is not a valid .zip.")
+            return
         except Exception as e:
             QMessageBox.critical(self, "Download failed", str(e))
             return
@@ -195,16 +225,20 @@ class StoreWindow(FramelessWindow):
             self.download_btn.setText("Download")
             self.download_btn.setEnabled(True)
 
-        self.downloaded[app["id"]] = path
+        # Prefer launching a game .exe; otherwise open the extracted folder.
+        target = find_exe(folder) or folder
+        self.downloaded[app["id"]] = target
+        self.open_btn.setText("Play" if target != folder else "Open folder")
         self.open_btn.setEnabled(True)
 
+        label = "Run the game now?" if target != folder else "Open the folder now?"
         answer = QMessageBox.question(
-            self, "Downloaded",
-            f"Saved to:\n{path}\n\nOpen it now?",
+            self, "Downloaded & extracted",
+            f"Extracted to:\n{folder}\n\n{label}",
             QMessageBox.Yes | QMessageBox.No,
         )
         if answer == QMessageBox.Yes:
-            self._launch(path)
+            self._launch(target)
 
     def open_selected(self):
         row = self.list.currentRow()
@@ -223,8 +257,13 @@ class StoreWindow(FramelessWindow):
             QMessageBox.critical(self, "Could not open", str(e))
 
     def upload(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Choose installer file")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Choose game .zip", "", "Zip archives (*.zip)",
+        )
         if not file_path:
+            return
+        if not file_path.lower().endswith(".zip"):
+            QMessageBox.warning(self, "Zip required", "Please choose a .zip file.")
             return
         name, ok = QInputDialog.getText(self, "App name", "Name:")
         if not ok or not name.strip():
