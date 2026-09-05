@@ -109,6 +109,39 @@ QTextEdit {{
     border: none;
 }}
 
+/* Frameless window chrome */
+#Container {{
+    background-color: {BG};
+    border: 1px solid {BORDER};
+    border-radius: 14px;
+}}
+#TitleBar {{
+    background-color: {SURFACE};
+    border-top-left-radius: 14px;
+    border-top-right-radius: 14px;
+}}
+#TitleBarTitle {{
+    font-weight: 600;
+    color: {TEXT_DIM};
+    padding-left: 12px;
+}}
+QPushButton#WinBtn {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 15px;
+    color: {TEXT_DIM};
+}}
+QPushButton#WinBtn:hover {{
+    background: {SURFACE_HI};
+    color: {TEXT};
+}}
+QPushButton#CloseBtn:hover {{
+    background: #e5484d;
+    color: white;
+}}
+
 QScrollBar:vertical {{
     background: transparent;
     width: 10px;
@@ -149,6 +182,30 @@ def placeholder_icon(name: str, size: int = 48) -> QIcon:
     p.drawText(pm.rect(), Qt.AlignCenter, letter)
     p.end()
     return QIcon(pm)
+
+
+def app_logo_pixmap(size: int = 256) -> QPixmap:
+    """The Epic Store brand mark: a rounded gradient tile with an 'E'."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    grad = QLinearGradient(0, 0, size, size)
+    grad.setColorAt(0, QColor(ACCENT_HI))
+    grad.setColorAt(1, QColor("#5b3ee0"))
+    p.setBrush(QBrush(grad))
+    p.setPen(Qt.NoPen)
+    p.drawRoundedRect(QRectF(0, 0, size, size), size * 0.22, size * 0.22)
+    p.setPen(QColor("white"))
+    p.setFont(QFont("Segoe UI", int(size * 0.5), QFont.Black))
+    p.drawText(pm.rect(), Qt.AlignCenter, "E")
+    p.end()
+    return pm
+
+
+def app_icon() -> QIcon:
+    """Runtime window/taskbar icon (no external file needed)."""
+    return QIcon(app_logo_pixmap(256))
 
 
 def icon_from_bytes(data: bytes, size: int = 48) -> QIcon:

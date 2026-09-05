@@ -12,6 +12,7 @@ from PySide6.QtGui import QPixmap
 
 from api import ApiClient, ApiError
 from ui.theme import placeholder_icon, icon_from_bytes
+from ui.frameless import FramelessWindow
 
 
 def human_size(n: int) -> str:
@@ -33,18 +34,16 @@ def open_file(path: str):
         subprocess.Popen(["xdg-open", path])
 
 
-class StoreWindow(QWidget):
+class StoreWindow(FramelessWindow):
     def __init__(self, api: ApiClient, username: str):
-        super().__init__()
+        super().__init__("Epic Store")
         self.api = api
         self.apps: list[dict] = []
         self.downloaded: dict[int, str] = {}  # app_id -> saved path (this session)
 
-        self.setWindowTitle("Epic Store")
-        self.resize(860, 560)
+        self.setFixedSize(900, 580)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
+        root = self.body  # add everything into the frameless content area
         root.setSpacing(14)
 
         # ---- Header ----
@@ -133,6 +132,12 @@ class StoreWindow(QWidget):
             QMessageBox.critical(self, "Error", f"Could not load apps:\n{e}")
             return
         self.list.clear()
+        if not self.apps:
+            empty = QListWidgetItem("  No apps yet.\n  Click “Upload app” to add one.")
+            empty.setFlags(Qt.NoItemFlags)  # not selectable
+            self.list.addItem(empty)
+            self._clear_details()
+            return
         for app in self.apps:
             item = QListWidgetItem(f"  {app['name']}\n  v{app['version']}")
             item.setIcon(self._icon_for(app))

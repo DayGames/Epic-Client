@@ -1,67 +1,55 @@
-"""Login / register screen."""
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QHBoxLayout,
-    QFrame,
-)
+"""Login / register screen (borderless)."""
+from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QMessageBox
 from PySide6.QtCore import Qt
 
 from api import ApiClient, ApiError
+from ui.frameless import FramelessWindow
 
 
-class LoginWindow(QWidget):
+class LoginWindow(FramelessWindow):
     def __init__(self, api: ApiClient, on_success):
-        super().__init__()
+        super().__init__("Epic Store")
         self.api = api
         self.on_success = on_success  # callback(username) after successful login
+        self.setFixedSize(420, 440)
 
-        self.setWindowTitle("Epic Store — Sign in")
-        self.setFixedSize(420, 420)
+        self.body.setContentsMargins(34, 10, 34, 30)
+        self.body.setSpacing(14)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(30, 30, 30, 30)
-
-        # Centered card
-        card = QFrame()
-        card.setObjectName("Card")
-        layout = QVBoxLayout(card)
-        layout.setSpacing(14)
-        layout.setContentsMargins(28, 28, 28, 28)
+        self.body.addStretch()
 
         title = QLabel("Epic Store")
         title.setObjectName("Title")
         title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        self.body.addWidget(title)
 
         subtitle = QLabel("Sign in to browse and download apps")
         subtitle.setObjectName("Subtitle")
         subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
-        layout.addSpacing(8)
+        self.body.addWidget(subtitle)
+        self.body.addSpacing(10)
 
         self.username = QLineEdit()
         self.username.setPlaceholderText("Username")
-        layout.addWidget(self.username)
+        self.body.addWidget(self.username)
 
         self.password = QLineEdit()
         self.password.setPlaceholderText("Password")
         self.password.setEchoMode(QLineEdit.Password)
         self.password.returnPressed.connect(self.handle_login)
-        layout.addWidget(self.password)
-        layout.addSpacing(6)
+        self.body.addWidget(self.password)
+        self.body.addSpacing(6)
 
         login_btn = QPushButton("Log in")
         login_btn.setObjectName("Primary")
         login_btn.clicked.connect(self.handle_login)
-        layout.addWidget(login_btn)
+        self.body.addWidget(login_btn)
 
         register_btn = QPushButton("Create an account")
         register_btn.clicked.connect(self.handle_register)
-        layout.addWidget(register_btn)
+        self.body.addWidget(register_btn)
 
-        layout.addStretch()
-        outer.addStretch()
-        outer.addWidget(card)
-        outer.addStretch()
+        self.body.addStretch()
 
     def handle_login(self):
         try:
