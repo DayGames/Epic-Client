@@ -31,6 +31,7 @@ class AppOut(BaseModel):
     version: str
     size_bytes: int
     uploaded_at: datetime
+    has_icon: bool = False
 
     class Config:
         from_attributes = True

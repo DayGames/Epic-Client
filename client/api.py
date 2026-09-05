@@ -52,18 +52,43 @@ class ApiClient:
             raise ApiError(self._detail(resp))
         return resp.json()
 
-    def upload_app(self, name: str, description: str, version: str, file_path: str) -> dict:
-        with open(file_path, "rb") as f:
+    def upload_app(
+        self,
+        name: str,
+        description: str,
+        version: str,
+        file_path: str,
+        icon_path: str | None = None,
+    ) -> dict:
+        import os
+
+        files = {"file": (os.path.basename(file_path), open(file_path, "rb"))}
+        if icon_path:
+            files["icon"] = (os.path.basename(icon_path), open(icon_path, "rb"))
+        try:
             resp = httpx.post(
                 f"{self.base_url}/apps",
                 data={"name": name, "description": description, "version": version},
-                files={"file": (file_path.split("/")[-1], f)},
+                files=files,
                 headers=self._headers(),
                 timeout=None,
             )
+        finally:
+            for _, (_, fh) in files.items():
+                fh.close()
         if resp.status_code >= 400:
             raise ApiError(self._detail(resp))
         return resp.json()
+
+    def get_icon_bytes(self, app_id: int) -> bytes | None:
+        """Return an app's icon image bytes, or None if it has no icon."""
+        try:
+            resp = httpx.get(f"{self.base_url}/apps/{app_id}/icon", timeout=30)
+        except Exception:
+            return None
+        if resp.status_code >= 400:
+            return None
+        return resp.content
 
     def download_app(self, app_id: int, save_name: str) -> str:
         """Streams the installer to DOWNLOAD_DIR; returns the saved path."""

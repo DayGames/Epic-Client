@@ -29,32 +29,42 @@ def get_app(app_id: int, db: Session = Depends(get_db)):
     return app
 
 
+def _save_upload(upload: UploadFile) -> tuple[str, int]:
+    """Stream an uploaded file to disk under a unique name. Returns (stored_name, size)."""
+    suffix = Path(upload.filename or "").suffix
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    dest = settings.files_dir / stored_name
+    size = 0
+    with dest.open("wb") as out:
+        while chunk := upload.file.read(1024 * 1024):  # 1 MB at a time
+            out.write(chunk)
+            size += len(chunk)
+    return stored_name, size
+
+
 @router.post("", response_model=schemas.AppOut)
 def upload_app(
     name: str = Form(...),
     description: str = Form(""),
     version: str = Form("1.0.0"),
     file: UploadFile = File(...),
+    icon: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Logged-in users upload an installer. Stored on disk; DB keeps the metadata."""
-    # Give every upload a unique on-disk name so files never collide.
-    suffix = Path(file.filename or "").suffix
-    stored_name = f"{uuid.uuid4().hex}{suffix}"
-    dest = settings.files_dir / stored_name
+    """Logged-in users upload an installer (+ optional icon image)."""
+    stored_name, size = _save_upload(file)
 
-    size = 0
-    with dest.open("wb") as out:
-        while chunk := file.file.read(1024 * 1024):  # stream 1 MB at a time
-            out.write(chunk)
-            size += len(chunk)
+    icon_name = None
+    if icon is not None and icon.filename:
+        icon_name, _ = _save_upload(icon)
 
     app = models.App(
         name=name,
         description=description,
         version=version,
         filename=stored_name,
+        icon_filename=icon_name,
         size_bytes=size,
         owner_id=current_user.id,
     )
@@ -62,6 +72,18 @@ def upload_app(
     db.commit()
     db.refresh(app)
     return app
+
+
+@router.get("/{app_id}/icon")
+def get_icon(app_id: int, db: Session = Depends(get_db)):
+    """Serve an app's icon image, or 404 if it has none."""
+    app = db.query(models.App).filter(models.App.id == app_id).first()
+    if not app or not app.icon_filename:
+        raise HTTPException(status_code=404, detail="No icon")
+    path = settings.files_dir / app.icon_filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Icon missing on server")
+    return FileResponse(path)
 
 
 @router.get("/{app_id}/download")

@@ -1,6 +1,7 @@
 """Login / register screen."""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QHBoxLayout,
+    QFrame,
 )
 from PySide6.QtCore import Qt
 
@@ -13,17 +14,29 @@ class LoginWindow(QWidget):
         self.api = api
         self.on_success = on_success  # callback(username) after successful login
 
-        self.setWindowTitle("Epic Client — Sign in")
-        self.setFixedSize(360, 300)
+        self.setWindowTitle("Epic Store — Sign in")
+        self.setFixedSize(420, 420)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(30, 30, 30, 30)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(30, 30, 30, 30)
 
-        title = QLabel("Epic Client")
+        # Centered card
+        card = QFrame()
+        card.setObjectName("Card")
+        layout = QVBoxLayout(card)
+        layout.setSpacing(14)
+        layout.setContentsMargins(28, 28, 28, 28)
+
+        title = QLabel("Epic Store")
+        title.setObjectName("Title")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 24px; font-weight: bold;")
         layout.addWidget(title)
+
+        subtitle = QLabel("Sign in to browse and download apps")
+        subtitle.setObjectName("Subtitle")
+        subtitle.setAlignment(Qt.AlignCenter)
+        layout.addWidget(subtitle)
+        layout.addSpacing(8)
 
         self.username = QLineEdit()
         self.username.setPlaceholderText("Username")
@@ -34,17 +47,21 @@ class LoginWindow(QWidget):
         self.password.setEchoMode(QLineEdit.Password)
         self.password.returnPressed.connect(self.handle_login)
         layout.addWidget(self.password)
+        layout.addSpacing(6)
 
-        buttons = QHBoxLayout()
         login_btn = QPushButton("Log in")
+        login_btn.setObjectName("Primary")
         login_btn.clicked.connect(self.handle_login)
-        register_btn = QPushButton("Register")
+        layout.addWidget(login_btn)
+
+        register_btn = QPushButton("Create an account")
         register_btn.clicked.connect(self.handle_register)
-        buttons.addWidget(login_btn)
-        buttons.addWidget(register_btn)
-        layout.addLayout(buttons)
+        layout.addWidget(register_btn)
 
         layout.addStretch()
+        outer.addStretch()
+        outer.addWidget(card)
+        outer.addStretch()
 
     def handle_login(self):
         try:

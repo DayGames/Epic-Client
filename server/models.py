@@ -26,8 +26,15 @@ class App(Base):
     version = Column(String, default="1.0.0")
     # Filename stored on disk inside settings.files_dir (not the full path).
     filename = Column(String, nullable=False)
+    # Optional icon image stored the same way; None if the app has no icon.
+    icon_filename = Column(String, nullable=True)
     size_bytes = Column(Integer, default=0)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User")
+
+    @property
+    def has_icon(self) -> bool:
+        """Convenience flag the API exposes so clients know whether to fetch an icon."""
+        return bool(self.icon_filename)

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from api import ApiClient
 from ui.login_window import LoginWindow
 from ui.store_window import StoreWindow
+from ui.theme import STYLESHEET
 
 
 class App:
@@ -31,6 +32,7 @@ class App:
 
 def main():
     qt_app = QApplication(sys.argv)
+    qt_app.setStyleSheet(STYLESHEET)
     app = App()
     app.start()
     sys.exit(qt_app.exec())
