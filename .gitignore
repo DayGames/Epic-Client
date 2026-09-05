@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# App data (don't commit the database or uploaded files)
+server/epicstore.db
+server/files/
+.env
+
+# PyInstaller build output
+client/build/
+client/dist/
+*.spec
