@@ -58,7 +58,18 @@ class App:
         self._show_login()
 
 
+def _set_windows_app_id():
+    """Tell Windows this is its own app so the taskbar shows our icon, not Python's."""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EpicStore.Client.1")
+        except Exception:
+            pass
+
+
 def main():
+    _set_windows_app_id()
     qt_app = QApplication(sys.argv)
     qt_app.setStyleSheet(STYLESHEET)
     qt_app.setWindowIcon(app_icon())
