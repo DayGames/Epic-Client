@@ -9,10 +9,10 @@ import json
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit,
     QMessageBox, QInputDialog, QFrame, QScrollArea, QStackedWidget, QButtonGroup,
-    QFileDialog, QMenu,
+    QFileDialog, QMenu, QProgressBar,
 )
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QSize, QThread, Signal
+from PySide6.QtGui import QPixmap, QIcon
 
 from api import ApiClient, ApiError
 from ui.theme import (
@@ -68,11 +68,56 @@ class ClickableFrame(QFrame):
             self._cb()
 
 
+class DownloadWorker(QThread):
+    """Downloads + extracts a game off the UI thread, reporting 0-100% progress."""
+    progress = Signal(int)
+    status = Signal(str)
+    done = Signal(str)      # extracted folder path
+    failed = Signal(str)
+
+    def __init__(self, api, app):
+        super().__init__()
+        self.api = api
+        self.app = app
+
+    def run(self):
+        try:
+            self.status.emit("Downloading…")
+            zip_path = self.api.download_app(
+                self.app["id"],
+                f"{self.app['name']}-{self.app['version']}.zip",
+                self._on_progress,
+            )
+            self.status.emit("Extracting…")
+            folder = self._extract(zip_path)
+            self.done.emit(folder)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+    def _on_progress(self, done, total):
+        if total > 0:
+            self.progress.emit(int(done / total * 50))  # download is first half
+
+    def _extract(self, zip_path: str) -> str:
+        folder = os.path.splitext(zip_path)[0]
+        os.makedirs(folder, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as z:
+            infos = z.infolist()
+            n = max(1, len(infos))
+            for i, info in enumerate(infos):
+                z.extract(info, folder)
+                self.progress.emit(50 + int((i + 1) / n * 50))  # extract is second half
+        return folder
+
+
 class StoreWindow(FramelessWindow):
-    def __init__(self, api: ApiClient, username: str):
+    def __init__(self, api: ApiClient, username: str, on_logout=None):
         super().__init__("Epic Store")
         self.api = api
         self.username = username
+        self.on_logout = on_logout
+        self._worker = None
+        self.current_app: dict | None = None
         self.apps: list[dict] = []
         self.downloaded: dict[int, str] = self._load_installed()  # persisted across runs
         self.view = "store"        # "store" | "library"
@@ -118,12 +163,24 @@ class StoreWindow(FramelessWindow):
             row.addWidget(b)
 
         row.addStretch()
-        avatar = QLabel()
-        avatar.setPixmap(avatar_pixmap(self.username, 34))
+        avatar = QPushButton()
+        avatar.setObjectName("Avatar")
+        avatar.setIcon(QIcon(avatar_pixmap(self.username, 34)))
+        avatar.setIconSize(QSize(34, 34))
         avatar.setToolTip(self.username)
+        avatar.setCursor(Qt.PointingHandCursor)
+        menu = QMenu(avatar)
+        menu.addAction(f"Signed in as {self.username}").setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Log out", self._logout)
+        avatar.setMenu(menu)
         row.addWidget(avatar)
 
         self.body.addWidget(bar)
+
+    def _logout(self):
+        if self.on_logout:
+            self.on_logout()
 
     def _build_main(self):
         main = QHBoxLayout()
@@ -351,6 +408,7 @@ class StoreWindow(FramelessWindow):
 
     # ---------- detail page ----------
     def open_detail(self, app: dict):
+        self.current_app = app
         self._clear(self.detail_layout)
 
         back = QPushButton("←  Back to store")
@@ -371,6 +429,7 @@ class StoreWindow(FramelessWindow):
         # actions — once installed, the Download button is replaced by Play/Open
         actions = QHBoxLayout()
         target = self.downloaded.get(app["id"])
+        self._dl_btn = None
         if target:
             openbtn = QPushButton("Play" if target.lower().endswith(".exe") else "Open")
             openbtn.setObjectName("Primary")
@@ -379,9 +438,9 @@ class StoreWindow(FramelessWindow):
             installed = QLabel("✓ Installed"); installed.setObjectName("Subtitle")
             actions.addWidget(installed)
         else:
-            dl = QPushButton("Download"); dl.setObjectName("Primary")
-            dl.clicked.connect(lambda _=False, a=app: self.download(a))
-            actions.addWidget(dl)
+            self._dl_btn = QPushButton("Download"); self._dl_btn.setObjectName("Primary")
+            self._dl_btn.clicked.connect(lambda _=False, a=app: self.download(a))
+            actions.addWidget(self._dl_btn)
 
         actions.addStretch()
 
@@ -395,6 +454,18 @@ class StoreWindow(FramelessWindow):
             actions.addWidget(more)
 
         self.detail_layout.addLayout(actions)
+
+        # progress row (hidden until a download starts)
+        self._progress = QProgressBar()
+        self._progress.setFixedWidth(340)
+        self._progress.hide()
+        self._progress_label = QLabel(""); self._progress_label.setObjectName("Subtitle")
+        self._progress_label.hide()
+        prow = QHBoxLayout()
+        prow.addWidget(self._progress)
+        prow.addWidget(self._progress_label)
+        prow.addStretch()
+        self.detail_layout.addLayout(prow)
 
         desc = QLabel(app["description"] or "No description provided.")
         desc.setWordWrap(True)
@@ -446,23 +517,41 @@ class StoreWindow(FramelessWindow):
 
     # ---------- actions ----------
     def download(self, app: dict):
-        try:
-            zip_path = self.api.download_app(app["id"], f"{app['name']}-{app['version']}.zip")
-            folder = extract_zip(zip_path)
-        except zipfile.BadZipFile:
-            QMessageBox.critical(self, "Download failed", "The downloaded file is not a valid .zip.")
-            return
-        except Exception as e:
-            QMessageBox.critical(self, "Download failed", str(e))
-            return
+        if self._worker and self._worker.isRunning():
+            return  # a download is already in progress
+        if self._dl_btn:
+            self._dl_btn.hide()
+        self._progress.setValue(0)
+        self._progress.show()
+        self._progress_label.setText("Starting…")
+        self._progress_label.show()
+
+        self._worker = DownloadWorker(self.api, app)
+        self._worker.progress.connect(self._progress.setValue)
+        self._worker.status.connect(self._progress_label.setText)
+        self._worker.done.connect(lambda folder, a=app: self._download_done(a, folder))
+        self._worker.failed.connect(self._download_failed)
+        self._worker.start()
+
+    def _download_done(self, app: dict, folder: str):
         target = find_exe(folder) or folder
         self.downloaded[app["id"]] = target
         self._save_installed()
+        # re-render so the Download button becomes Play/Open
+        if self.current_app and self.current_app["id"] == app["id"]:
+            self.open_detail(app)
         label = "Run the game now?" if target != folder else "Open the folder now?"
         if QMessageBox.question(self, "Downloaded & extracted",
                                 f"Extracted to:\n{folder}\n\n{label}") == QMessageBox.Yes:
             self._launch(target)
-        self.open_detail(app)
+
+    def _download_failed(self, msg: str):
+        if self._progress:
+            self._progress.hide()
+            self._progress_label.hide()
+        if self._dl_btn:
+            self._dl_btn.show()
+        QMessageBox.critical(self, "Download failed", msg)
 
     def open_game(self, app: dict):
         target = self.downloaded.get(app["id"])

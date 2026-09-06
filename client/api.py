@@ -45,6 +45,16 @@ class ApiClient:
             raise ApiError(self._detail(resp))
         self.token = resp.json()["access_token"]
 
+    def set_token(self, token: str) -> None:
+        self.token = token
+
+    def get_me(self) -> dict:
+        """Validate the current token and return the logged-in user."""
+        resp = httpx.get(f"{self.base_url}/users/me", headers=self._headers(), timeout=10)
+        if resp.status_code >= 400:
+            raise ApiError(self._detail(resp))
+        return resp.json()
+
     # --- apps ---
     def list_apps(self) -> list[dict]:
         resp = httpx.get(f"{self.base_url}/apps", timeout=30)
@@ -165,13 +175,21 @@ class ApiClient:
                     out.write(chunk)
         return str(dest)
 
-    def download_app(self, app_id: int, save_name: str) -> str:
-        """Streams the installer to DOWNLOAD_DIR; returns the saved path."""
+    def download_app(self, app_id: int, save_name: str, on_progress=None) -> str:
+        """Streams the installer to DOWNLOAD_DIR; returns the saved path.
+
+        on_progress(bytes_done, total_bytes) is called as chunks arrive.
+        """
         dest = DOWNLOAD_DIR / save_name
         with httpx.stream("GET", f"{self.base_url}/apps/{app_id}/download", timeout=None) as resp:
             if resp.status_code >= 400:
                 raise ApiError(self._detail(resp))
+            total = int(resp.headers.get("Content-Length", 0))
+            done = 0
             with dest.open("wb") as out:
                 for chunk in resp.iter_bytes():
                     out.write(chunk)
+                    done += len(chunk)
+                    if on_progress:
+                        on_progress(done, total)
         return str(dest)

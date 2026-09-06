@@ -103,6 +103,22 @@ QPushButton#MoreBtn::menu-indicator {{ image: none; width: 0; }}
 QMenu {{ background-color: {SURFACE_HI}; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px; }}
 QMenu::item {{ padding: 8px 22px; border-radius: 6px; color: {TEXT}; }}
 QMenu::item:selected {{ background-color: {ACCENT}; color: white; }}
+
+/* Download progress */
+QProgressBar {{
+    background-color: {SURFACE_HI};
+    border: 1px solid {BORDER};
+    border-radius: 9px;
+    height: 18px;
+    text-align: center;
+    color: {TEXT};
+    font-size: 12px;
+}}
+QProgressBar::chunk {{ background-color: {ACCENT}; border-radius: 9px; }}
+
+/* Account avatar button */
+QPushButton#Avatar {{ background: transparent; border: none; padding: 0; }}
+QPushButton#Avatar::menu-indicator {{ image: none; width: 0; }}
 #Container {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 14px; }}
 #TitleBar {{ background-color: {BG}; border-top-left-radius: 14px; border-top-right-radius: 14px; }}
 #TitleBarTitle {{ font-weight: 600; color: {TEXT_DIM}; padding-left: 12px; }}
