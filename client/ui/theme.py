@@ -96,6 +96,13 @@ QFrame#GameCard:hover {{ border: 1px solid #4a4a55; }}
 QFrame#Hero {{ border-radius: 16px; }}
 
 QTextEdit {{ background-color: transparent; border: none; }}
+
+/* 3-dots menu button + its popup */
+QPushButton#MoreBtn {{ padding: 9px 14px; font-size: 18px; font-weight: 800; }}
+QPushButton#MoreBtn::menu-indicator {{ image: none; width: 0; }}
+QMenu {{ background-color: {SURFACE_HI}; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px; }}
+QMenu::item {{ padding: 8px 22px; border-radius: 6px; color: {TEXT}; }}
+QMenu::item:selected {{ background-color: {ACCENT}; color: white; }}
 #Container {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 14px; }}
 #TitleBar {{ background-color: {BG}; border-top-left-radius: 14px; border-top-right-radius: 14px; }}
 #TitleBarTitle {{ font-weight: 600; color: {TEXT_DIM}; padding-left: 12px; }}

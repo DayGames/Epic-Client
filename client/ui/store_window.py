@@ -4,10 +4,12 @@ import sys
 import zipfile
 import subprocess
 
+import json
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit,
     QMessageBox, QInputDialog, QFrame, QScrollArea, QStackedWidget, QButtonGroup,
-    QFileDialog,
+    QFileDialog, QMenu,
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPixmap
@@ -72,7 +74,7 @@ class StoreWindow(FramelessWindow):
         self.api = api
         self.username = username
         self.apps: list[dict] = []
-        self.downloaded: dict[int, str] = {}
+        self.downloaded: dict[int, str] = self._load_installed()  # persisted across runs
         self.view = "store"        # "store" | "library"
         self.search_text = ""
         self._banner_cache: dict[int, bytes | None] = {}
@@ -192,6 +194,25 @@ class StoreWindow(FramelessWindow):
         self.nav_library.setChecked(view == "library")
         self.stack.setCurrentIndex(0)
         self.render_store()
+
+    # ---------- installed-state persistence ----------
+    def _installed_file(self):
+        from config import DOWNLOAD_DIR
+        return DOWNLOAD_DIR / "installed.json"
+
+    def _load_installed(self) -> dict[int, str]:
+        """Load the map of downloaded games, dropping any whose files are gone."""
+        try:
+            data = json.loads(self._installed_file().read_text())
+            return {int(k): v for k, v in data.items() if os.path.exists(v)}
+        except Exception:
+            return {}
+
+    def _save_installed(self):
+        try:
+            self._installed_file().write_text(json.dumps(self.downloaded))
+        except Exception:
+            pass
 
     # ---------- data ----------
     def load_apps(self):
@@ -347,21 +368,32 @@ class StoreWindow(FramelessWindow):
         owner.setObjectName("Subtitle")
         self.detail_layout.addWidget(owner)
 
-        # actions
+        # actions — once installed, the Download button is replaced by Play/Open
         actions = QHBoxLayout()
-        dl = QPushButton("Download"); dl.setObjectName("Primary")
-        dl.clicked.connect(lambda _=False, a=app: self.download(a))
-        actions.addWidget(dl)
         target = self.downloaded.get(app["id"])
-        openbtn = QPushButton("Play" if (target and target.lower().endswith(".exe")) else "Open")
-        openbtn.setEnabled(bool(target))
-        openbtn.clicked.connect(lambda _=False, a=app: self.open_game(a))
-        actions.addWidget(openbtn)
-        if app["owner_username"] == self.username:
-            edit = QPushButton("Edit"); edit.clicked.connect(lambda _=False, a=app: self.edit(a))
-            add_dlc = QPushButton("Add DLC"); add_dlc.clicked.connect(lambda _=False, a=app: self.add_dlc(a))
-            actions.addWidget(edit); actions.addWidget(add_dlc)
+        if target:
+            openbtn = QPushButton("Play" if target.lower().endswith(".exe") else "Open")
+            openbtn.setObjectName("Primary")
+            openbtn.clicked.connect(lambda _=False, a=app: self.open_game(a))
+            actions.addWidget(openbtn)
+            installed = QLabel("✓ Installed"); installed.setObjectName("Subtitle")
+            actions.addWidget(installed)
+        else:
+            dl = QPushButton("Download"); dl.setObjectName("Primary")
+            dl.clicked.connect(lambda _=False, a=app: self.download(a))
+            actions.addWidget(dl)
+
         actions.addStretch()
+
+        # owner-only 3-dots menu (Edit / Add DLC)
+        if app["owner_username"] == self.username:
+            more = QPushButton("⋯"); more.setObjectName("MoreBtn")
+            menu = QMenu(more)
+            menu.addAction("Edit", lambda a=app: self.edit(a))
+            menu.addAction("Add DLC", lambda a=app: self.add_dlc(a))
+            more.setMenu(menu)
+            actions.addWidget(more)
+
         self.detail_layout.addLayout(actions)
 
         desc = QLabel(app["description"] or "No description provided.")
@@ -425,6 +457,7 @@ class StoreWindow(FramelessWindow):
             return
         target = find_exe(folder) or folder
         self.downloaded[app["id"]] = target
+        self._save_installed()
         label = "Run the game now?" if target != folder else "Open the folder now?"
         if QMessageBox.question(self, "Downloaded & extracted",
                                 f"Extracted to:\n{folder}\n\n{label}") == QMessageBox.Yes:
