@@ -1,18 +1,22 @@
-"""Main store window: browse, view media, download/play, edit, and manage DLC."""
+"""Epic-Games-Store-style storefront: sidebar, top bar, hero, and a game grid."""
 import os
 import sys
 import zipfile
 import subprocess
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
-    QListWidgetItem, QMessageBox, QInputDialog, QFrame, QScrollArea,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QLineEdit,
+    QMessageBox, QInputDialog, QFrame, QScrollArea, QStackedWidget, QButtonGroup,
+    QFileDialog,
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QPixmap
 
 from api import ApiClient, ApiError
-from ui.theme import placeholder_icon, icon_from_bytes
+from ui.theme import (
+    placeholder_icon, icon_from_bytes, gradient_pixmap, avatar_pixmap,
+    app_logo_pixmap, rounded_pixmap_from_bytes,
+)
 from ui.frameless import FramelessWindow
 from ui.upload_dialog import UploadDialog
 
@@ -28,7 +32,7 @@ def human_size(n: int) -> str:
 
 def open_file(path: str):
     if sys.platform.startswith("win"):
-        os.startfile(path)  # noqa  (Windows only)
+        os.startfile(path)  # noqa
     elif sys.platform == "darwin":
         subprocess.Popen(["open", path])
     else:
@@ -51,6 +55,17 @@ def find_exe(folder: str) -> str | None:
     return None
 
 
+class ClickableFrame(QFrame):
+    def __init__(self, on_click):
+        super().__init__()
+        self._cb = on_click
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._cb()
+
+
 class StoreWindow(FramelessWindow):
     def __init__(self, api: ApiClient, username: str):
         super().__init__("Epic Store")
@@ -58,45 +73,125 @@ class StoreWindow(FramelessWindow):
         self.username = username
         self.apps: list[dict] = []
         self.downloaded: dict[int, str] = {}
+        self.view = "store"        # "store" | "library"
+        self.search_text = ""
+        self._banner_cache: dict[int, bytes | None] = {}
 
-        self.setFixedSize(1000, 640)
-        root = self.body
-        root.setSpacing(14)
+        self.setFixedSize(1200, 720)
+        self.body.setContentsMargins(0, 0, 0, 0)
+        self.body.setSpacing(0)
 
-        # Header
-        header = QHBoxLayout()
-        tbox = QVBoxLayout()
-        title = QLabel("Epic Store"); title.setObjectName("Title")
-        sub = QLabel(f"Signed in as {username}"); sub.setObjectName("Subtitle")
-        tbox.addWidget(title); tbox.addWidget(sub)
-        header.addLayout(tbox); header.addStretch()
-        refresh = QPushButton("Refresh"); refresh.clicked.connect(self.load_apps)
+        self._build_topbar()
+        self._build_main()
+        self.load_apps()
+
+    # ---------- chrome ----------
+    def _build_topbar(self):
+        bar = QWidget()
+        bar.setFixedHeight(64)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(20, 10, 20, 10)
+        row.setSpacing(16)
+
+        logo = QLabel()
+        logo.setPixmap(app_logo_pixmap(30).scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        row.addWidget(logo)
+        wordmark = QLabel("EPIC"); wordmark.setObjectName("Logo")
+        row.addWidget(wordmark)
+
+        self.search = QLineEdit()
+        self.search.setObjectName("Search")
+        self.search.setPlaceholderText("Search store")
+        self.search.setFixedWidth(300)
+        self.search.textChanged.connect(self._on_search)
+        row.addWidget(self.search)
+
+        # decorative top links
+        self.top_group = QButtonGroup(self)
+        for i, name in enumerate(("Discover", "Browse", "News")):
+            b = QPushButton(name); b.setObjectName("TopLink"); b.setCheckable(True)
+            b.setChecked(i == 0)
+            b.clicked.connect(lambda _=False, n=name: self._top_link(n))
+            self.top_group.addButton(b)
+            row.addWidget(b)
+
+        row.addStretch()
+        avatar = QLabel()
+        avatar.setPixmap(avatar_pixmap(self.username, 34))
+        avatar.setToolTip(self.username)
+        row.addWidget(avatar)
+
+        self.body.addWidget(bar)
+
+    def _build_main(self):
+        main = QHBoxLayout()
+        main.setContentsMargins(14, 0, 14, 14)
+        main.setSpacing(14)
+
+        # Sidebar
+        side = QWidget(); side.setObjectName("Sidebar"); side.setFixedWidth(200)
+        sl = QVBoxLayout(side); sl.setContentsMargins(6, 6, 6, 6); sl.setSpacing(6)
+        self.nav_group = QButtonGroup(self)
+        self.nav_store = self._nav("🛍  Store", True, lambda: self._set_view("store"))
+        self.nav_library = self._nav("📚  Library", False, lambda: self._set_view("library"))
+        sl.addWidget(self.nav_store)
+        sl.addWidget(self.nav_library)
+        sl.addStretch()
         upload = QPushButton("Upload game"); upload.setObjectName("Primary")
         upload.clicked.connect(self.upload)
-        header.addWidget(refresh); header.addWidget(upload)
-        root.addLayout(header)
+        sl.addWidget(upload)
+        main.addWidget(side)
 
-        # Body: list + details
-        body = QHBoxLayout(); body.setSpacing(14)
-        self.list = QListWidget()
-        self.list.setIconSize(QSize(44, 44))
-        self.list.setFixedWidth(300)
-        self.list.currentRowChanged.connect(self.show_details)
-        body.addWidget(self.list)
+        # Content stack
+        self.stack = QStackedWidget()
+        # page 0: store scroll
+        self.store_scroll = QScrollArea(); self.store_scroll.setWidgetResizable(True)
+        self.store_scroll.setFrameShape(QFrame.NoFrame)
+        self.store_page = QWidget()
+        self.store_layout = QVBoxLayout(self.store_page)
+        self.store_layout.setContentsMargins(6, 6, 6, 6)
+        self.store_layout.setSpacing(18)
+        self.store_scroll.setWidget(self.store_page)
+        self.stack.addWidget(self.store_scroll)
+        # page 1: detail scroll
+        self.detail_scroll = QScrollArea(); self.detail_scroll.setWidgetResizable(True)
+        self.detail_scroll.setFrameShape(QFrame.NoFrame)
+        self.detail_page = QWidget()
+        self.detail_layout = QVBoxLayout(self.detail_page)
+        self.detail_layout.setContentsMargins(6, 6, 6, 6)
+        self.detail_layout.setSpacing(14)
+        self.detail_scroll.setWidget(self.detail_page)
+        self.stack.addWidget(self.detail_scroll)
 
-        # Scrollable details panel
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        panel = QFrame(); panel.setObjectName("Panel")
-        self.detail_layout = QVBoxLayout(panel)
-        self.detail_layout.setContentsMargins(20, 20, 20, 20)
-        self.detail_layout.setSpacing(12)
-        self.scroll.setWidget(panel)
-        body.addWidget(self.scroll, 1)
-        root.addLayout(body)
+        main.addWidget(self.stack, 1)
+        self.body.addLayout(main)
 
-        self.load_apps()
+    def _nav(self, text, checked, cb):
+        b = QPushButton(text); b.setObjectName("NavItem"); b.setCheckable(True)
+        b.setChecked(checked)
+        b.clicked.connect(cb)
+        self.nav_group.addButton(b)
+        return b
+
+    # ---------- events ----------
+    def _on_search(self, text):
+        self.search_text = text.strip().lower()
+        self.render_store()
+
+    def _top_link(self, name):
+        if name == "News":
+            QMessageBox.information(self, "News", "No news yet — check back later!")
+            # revert selection to Discover
+            self.top_group.buttons()[0].setChecked(True)
+            return
+        self._set_view("store")
+
+    def _set_view(self, view):
+        self.view = view
+        self.nav_store.setChecked(view == "store")
+        self.nav_library.setChecked(view == "library")
+        self.stack.setCurrentIndex(0)
+        self.render_store()
 
     # ---------- data ----------
     def load_apps(self):
@@ -105,109 +200,154 @@ class StoreWindow(FramelessWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load games:\n{e}")
             return
-        self.list.clear()
-        if not self.apps:
-            empty = QListWidgetItem("  No games yet.\n  Click “Upload game” to add one.")
-            empty.setFlags(Qt.NoItemFlags)
-            self.list.addItem(empty)
-            self._show_placeholder()
-            return
-        for app in self.apps:
-            item = QListWidgetItem(f"  {app['name']}\n  by {app['owner_username']}")
-            item.setIcon(self._icon_for(app))
-            self.list.addItem(item)
-        self._show_placeholder()
+        self.render_store()
 
-    def _icon_for(self, app: dict):
-        if app.get("has_icon"):
+    def _visible_apps(self) -> list[dict]:
+        apps = self.apps
+        if self.view == "library":
+            apps = [a for a in apps if a["id"] in self.downloaded]
+        if self.search_text:
+            apps = [a for a in apps
+                    if self.search_text in a["name"].lower()
+                    or self.search_text in a["owner_username"].lower()]
+        return apps
+
+    def _banner_bytes(self, app: dict) -> bytes | None:
+        """First screenshot bytes (cached) for cards/hero, else None."""
+        if app["id"] in self._banner_cache:
+            return self._banner_cache[app["id"]]
+        data = None
+        images = [m for m in app.get("media", []) if m["kind"] == "image"]
+        if images:
+            data = self.api.get_media_bytes(app["id"], images[0]["id"])
+        elif app.get("has_icon"):
             data = self.api.get_icon_bytes(app["id"])
-            if data:
-                icon = icon_from_bytes(data, 44)
-                if not icon.isNull():
-                    return icon
-        return placeholder_icon(app["name"], 44)
+        self._banner_cache[app["id"]] = data
+        return data
 
-    # ---------- details panel ----------
-    def _clear_details(self):
-        while self.detail_layout.count():
-            item = self.detail_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-            elif item.layout():
-                self._clear_sublayout(item.layout())
+    def _banner_pixmap(self, app: dict, w: int, h: int) -> QPixmap:
+        data = self._banner_bytes(app)
+        if data:
+            pm = rounded_pixmap_from_bytes(data, w, h, 10)
+            if pm:
+                return pm
+        return gradient_pixmap(app["name"], w, h)
 
-    def _clear_sublayout(self, lay):
-        while lay.count():
-            item = lay.takeAt(0)
+    # ---------- store page ----------
+    def _clear(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
             elif item.layout():
-                self._clear_sublayout(item.layout())
+                self._clear(item.layout())
 
-    def _show_placeholder(self):
-        self._clear_details()
-        msg = QLabel("Select a game to see details.")
-        msg.setObjectName("Subtitle")
-        self.detail_layout.addWidget(msg)
-        self.detail_layout.addStretch()
+    def render_store(self):
+        self._clear(self.store_layout)
+        apps = self._visible_apps()
 
-    def show_details(self, row: int):
-        if row < 0 or row >= len(self.apps):
+        if not apps:
+            box = QVBoxLayout()
+            t = QLabel("Your library is empty." if self.view == "library"
+                       else "No games in the store yet.")
+            t.setObjectName("SectionLabel")
+            s = QLabel("Downloaded games appear here." if self.view == "library"
+                       else "Click “Upload game” to add the first one.")
+            s.setObjectName("Subtitle")
+            self.store_layout.addWidget(t)
+            self.store_layout.addWidget(s)
+            self.store_layout.addStretch()
             return
-        app = self.apps[row]
-        self._clear_details()
 
-        # Header: icon + name + owner + meta
-        head = QHBoxLayout()
-        icon = QLabel()
-        icon.setPixmap(self._icon_for(app).pixmap(72, 72))
-        icon.setFixedSize(72, 72)
-        head.addWidget(icon)
-        nbox = QVBoxLayout(); nbox.addStretch()
-        name = QLabel(app["name"]); name.setObjectName("SectionLabel")
+        # Featured hero = first game (only on store view without search)
+        start = 0
+        if self.view == "store" and not self.search_text:
+            self.store_layout.addWidget(self._make_hero(apps[0]))
+            heading = QLabel("Browse"); heading.setObjectName("SectionLabel")
+            self.store_layout.addWidget(heading)
+
+        # Grid of cards
+        grid_host = QWidget()
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(14)
+        cols = 3
+        for i, app in enumerate(apps):
+            grid.addWidget(self._make_card(app), i // cols, i % cols)
+        # keep cards left-aligned
+        for c in range(cols):
+            grid.setColumnStretch(c, 1)
+        self.store_layout.addWidget(grid_host)
+        self.store_layout.addStretch()
+
+    def _make_hero(self, app: dict) -> QWidget:
+        hero = ClickableFrame(lambda a=app: self.open_detail(a))
+        hero.setObjectName("Hero")
+        hero.setFixedHeight(250)
+        hero.setStyleSheet("")  # use image as content
+        lay = QHBoxLayout(hero)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        img = QLabel()
+        img.setPixmap(self._banner_pixmap(app, 1000, 250))
+        img.setFixedHeight(250)
+        lay.addWidget(img)
+
+        # overlay text
+        overlay = QWidget(hero)
+        overlay.setStyleSheet("background: transparent;")
+        ol = QVBoxLayout(overlay)
+        ol.setContentsMargins(36, 0, 36, 0)
+        ol.addStretch()
+        tag = QLabel("FEATURED"); tag.setObjectName("Subtitle")
+        title = QLabel(app["name"]); title.setObjectName("HeroTitle")
         owner = QLabel(f"by {app['owner_username']}"); owner.setObjectName("Subtitle")
-        meta = QLabel(f"Version {app['version']}  ·  {human_size(app['size_bytes'])}")
-        meta.setObjectName("Subtitle")
-        nbox.addWidget(name); nbox.addWidget(owner); nbox.addWidget(meta); nbox.addStretch()
-        head.addLayout(nbox); head.addStretch()
-        self.detail_layout.addLayout(head)
+        view = QPushButton("View"); view.setObjectName("Primary"); view.setFixedWidth(120)
+        view.clicked.connect(lambda _=False, a=app: self.open_detail(a))
+        ol.addWidget(tag); ol.addWidget(title); ol.addWidget(owner)
+        ol.addSpacing(10); ol.addWidget(view)
+        ol.addStretch()
+        overlay.setGeometry(0, 0, 980, 250)
+        return hero
 
-        # Description
-        desc = QLabel(app["description"] or "No description provided.")
-        desc.setWordWrap(True)
-        self.detail_layout.addWidget(desc)
+    def _make_card(self, app: dict) -> QFrame:
+        card = ClickableFrame(lambda a=app: self.open_detail(a))
+        card.setObjectName("GameCard")
+        card.setFixedHeight(220)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
 
-        # Screenshots
-        images = [m for m in app.get("media", []) if m["kind"] == "image"]
-        if images:
-            self.detail_layout.addWidget(self._section_label("Screenshots"))
-            row_l = QHBoxLayout()
-            for m in images[:4]:
-                data = self.api.get_media_bytes(app["id"], m["id"])
-                if data:
-                    pm = QPixmap(); pm.loadFromData(data)
-                    if not pm.isNull():
-                        thumb = QLabel()
-                        thumb.setPixmap(pm.scaled(150, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                        row_l.addWidget(thumb)
-            row_l.addStretch()
-            self.detail_layout.addLayout(row_l)
+        thumb = QLabel()
+        thumb.setPixmap(self._banner_pixmap(app, 320, 150).scaled(320, 150, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+        thumb.setFixedHeight(150)
+        lay.addWidget(thumb)
 
-        # Videos
-        videos = [m for m in app.get("media", []) if m["kind"] == "video"]
-        if videos:
-            self.detail_layout.addWidget(self._section_label("Videos"))
-            for i, m in enumerate(videos, 1):
-                vrow = QHBoxLayout()
-                vrow.addWidget(QLabel(f"▶  Trailer {i}"))
-                vrow.addStretch()
-                btn = QPushButton("Open")
-                btn.clicked.connect(lambda _=False, aid=app["id"], mid=m["id"]: self.open_video(aid, mid))
-                vrow.addWidget(btn)
-                self.detail_layout.addLayout(vrow)
+        name = QLabel(app["name"]); name.setObjectName("CardTitle")
+        owner = QLabel(f"by {app['owner_username']}"); owner.setObjectName("CardSub")
+        lay.addWidget(name); lay.addWidget(owner)
+        return card
 
-        # Action buttons
+    # ---------- detail page ----------
+    def open_detail(self, app: dict):
+        self._clear(self.detail_layout)
+
+        back = QPushButton("←  Back to store")
+        back.setFixedWidth(160)
+        back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        self.detail_layout.addWidget(back)
+
+        banner = QLabel()
+        banner.setPixmap(self._banner_pixmap(app, 940, 300))
+        self.detail_layout.addWidget(banner)
+
+        title = QLabel(app["name"]); title.setObjectName("Title")
+        self.detail_layout.addWidget(title)
+        owner = QLabel(f"by {app['owner_username']}   ·   Version {app['version']}   ·   {human_size(app['size_bytes'])}")
+        owner.setObjectName("Subtitle")
+        self.detail_layout.addWidget(owner)
+
+        # actions
         actions = QHBoxLayout()
         dl = QPushButton("Download"); dl.setObjectName("Primary")
         dl.clicked.connect(lambda _=False, a=app: self.download(a))
@@ -217,36 +357,59 @@ class StoreWindow(FramelessWindow):
         openbtn.setEnabled(bool(target))
         openbtn.clicked.connect(lambda _=False, a=app: self.open_game(a))
         actions.addWidget(openbtn)
+        if app["owner_username"] == self.username:
+            edit = QPushButton("Edit"); edit.clicked.connect(lambda _=False, a=app: self.edit(a))
+            add_dlc = QPushButton("Add DLC"); add_dlc.clicked.connect(lambda _=False, a=app: self.add_dlc(a))
+            actions.addWidget(edit); actions.addWidget(add_dlc)
+        actions.addStretch()
         self.detail_layout.addLayout(actions)
 
-        # Owner-only controls
-        if app["owner_username"] == self.username:
-            owner_row = QHBoxLayout()
-            edit = QPushButton("Edit")
-            edit.clicked.connect(lambda _=False, a=app: self.edit(a))
-            add_dlc = QPushButton("Add DLC")
-            add_dlc.clicked.connect(lambda _=False, a=app: self.add_dlc(a))
-            owner_row.addWidget(edit); owner_row.addWidget(add_dlc); owner_row.addStretch()
-            self.detail_layout.addLayout(owner_row)
+        desc = QLabel(app["description"] or "No description provided.")
+        desc.setWordWrap(True)
+        self.detail_layout.addWidget(desc)
 
-        # DLC list
+        images = [m for m in app.get("media", []) if m["kind"] == "image"]
+        if images:
+            self.detail_layout.addWidget(self._section("Screenshots"))
+            r = QHBoxLayout()
+            for m in images[:4]:
+                data = self.api.get_media_bytes(app["id"], m["id"])
+                if data:
+                    pm = QPixmap(); pm.loadFromData(data)
+                    if not pm.isNull():
+                        lbl = QLabel()
+                        lbl.setPixmap(pm.scaled(200, 112, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        r.addWidget(lbl)
+            r.addStretch()
+            self.detail_layout.addLayout(r)
+
+        videos = [m for m in app.get("media", []) if m["kind"] == "video"]
+        if videos:
+            self.detail_layout.addWidget(self._section("Videos"))
+            for i, m in enumerate(videos, 1):
+                vr = QHBoxLayout()
+                vr.addWidget(QLabel(f"▶  Trailer {i}")); vr.addStretch()
+                b = QPushButton("Open")
+                b.clicked.connect(lambda _=False, aid=app["id"], mid=m["id"]: self.open_video(aid, mid))
+                vr.addWidget(b)
+                self.detail_layout.addLayout(vr)
+
         dlc = app.get("dlc", [])
         if dlc:
-            self.detail_layout.addWidget(self._section_label("DLC"))
+            self.detail_layout.addWidget(self._section("DLC"))
             for d in dlc:
-                drow = QHBoxLayout()
-                drow.addWidget(QLabel(f"{d['name']}  ·  {human_size(d['size_bytes'])}"))
-                drow.addStretch()
-                get = QPushButton("Download")
-                get.clicked.connect(lambda _=False, a=app, dd=d: self.download_dlc(a, dd))
-                drow.addWidget(get)
-                self.detail_layout.addLayout(drow)
+                dr = QHBoxLayout()
+                dr.addWidget(QLabel(f"{d['name']}   ·   {human_size(d['size_bytes'])}")); dr.addStretch()
+                g = QPushButton("Download")
+                g.clicked.connect(lambda _=False, a=app, dd=d: self.download_dlc(a, dd))
+                dr.addWidget(g)
+                self.detail_layout.addLayout(dr)
 
         self.detail_layout.addStretch()
+        self.stack.setCurrentIndex(1)
 
-    def _section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet("font-weight: 600; margin-top: 4px;")
+    def _section(self, text):
+        lbl = QLabel(text); lbl.setObjectName("SectionLabel")
         return lbl
 
     # ---------- actions ----------
@@ -266,7 +429,7 @@ class StoreWindow(FramelessWindow):
         if QMessageBox.question(self, "Downloaded & extracted",
                                 f"Extracted to:\n{folder}\n\n{label}") == QMessageBox.Yes:
             self._launch(target)
-        self.show_details(self.list.currentRow())
+        self.open_detail(app)
 
     def open_game(self, app: dict):
         target = self.downloaded.get(app["id"])
@@ -316,6 +479,7 @@ class StoreWindow(FramelessWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e)); return
         QMessageBox.information(self, "Uploaded", f"'{v['name']}' is now in the store.")
+        self._banner_cache.clear()
         self.load_apps()
 
     def edit(self, app: dict):
@@ -332,10 +496,10 @@ class StoreWindow(FramelessWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e)); return
         QMessageBox.information(self, "Saved", "Your changes were saved.")
+        self._banner_cache.pop(app["id"], None)
         self.load_apps()
 
     def add_dlc(self, app: dict):
-        from PySide6.QtWidgets import QFileDialog
         name, ok = QInputDialog.getText(self, "DLC name", "Name of the DLC:")
         if not ok or not name.strip():
             return
