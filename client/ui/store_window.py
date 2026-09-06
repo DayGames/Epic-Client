@@ -407,6 +407,13 @@ class StoreWindow(FramelessWindow):
         return card
 
     # ---------- detail page ----------
+    def open_game_by_id(self, app_id: int):
+        """Open a specific game's page (used by the epicstore:// deep link)."""
+        for a in self.apps:
+            if a["id"] == app_id:
+                self.open_detail(a)
+                return
+
     def open_detail(self, app: dict):
         self.current_app = app
         self._clear(self.detail_layout)
