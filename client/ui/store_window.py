@@ -470,12 +470,14 @@ class StoreWindow(FramelessWindow):
 
         actions.addStretch()
 
-        # owner-only 3-dots menu (Edit / Add DLC)
+        # owner-only 3-dots menu (Edit / Add DLC / Delete)
         if app["owner_username"] == self.username:
             more = QPushButton("⋯"); more.setObjectName("MoreBtn")
             menu = QMenu(more)
             menu.addAction("Edit", lambda a=app: self.edit(a))
             menu.addAction("Add DLC", lambda a=app: self.add_dlc(a))
+            menu.addSeparator()
+            menu.addAction("Delete game", lambda a=app: self.delete_app(a))
             more.setMenu(menu)
             actions.addWidget(more)
 
@@ -682,6 +684,30 @@ class StoreWindow(FramelessWindow):
 
         self._run_task(work, busy="Saving changes…", on_done=finished,
                        fail_title="Edit failed")
+
+    def delete_app(self, app: dict):
+        if QMessageBox.warning(
+            self, "Delete game",
+            f"Permanently delete '{app['name']}'?\n\n"
+            "This removes it from the store for everyone and cannot be undone.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) != QMessageBox.Yes:
+            return
+
+        app_id = app["id"]
+
+        def finished(_r):
+            QMessageBox.information(self, "Deleted", f"'{app['name']}' was removed.")
+            self._banner_cache.pop(app_id, None)
+            self.downloaded.pop(app_id, None)
+            self._save_installed()
+            self.current_app = None
+            self.stack.setCurrentIndex(0)   # back to the store grid
+            self.load_apps()                # refresh so the deleted game is gone
+
+        self._run_task(lambda: self.api.delete_app(app_id),
+                       busy=f"Deleting '{app['name']}'…",
+                       on_done=finished, fail_title="Delete failed")
 
     def add_dlc(self, app: dict):
         name, ok = QInputDialog.getText(self, "DLC name", "Name of the DLC:")

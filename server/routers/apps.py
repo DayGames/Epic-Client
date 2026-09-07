@@ -158,6 +158,34 @@ def add_dlc(
     return app
 
 
+@router.delete("/{app_id}")
+def delete_app(
+    app_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Owner-only: delete an app, its media/DLC rows (cascade), and their files."""
+    app = _require_owner(db.query(models.App).filter(models.App.id == app_id).first(), current_user)
+
+    # Collect stored filenames before the rows are gone, then remove from disk.
+    stored_names = [app.filename, app.icon_filename]
+    stored_names += [m.filename for m in app.media]
+    stored_names += [d.filename for d in app.dlc]
+
+    db.delete(app)   # cascade="all, delete-orphan" removes media/dlc rows
+    db.commit()
+
+    for name in stored_names:
+        if not name:
+            continue
+        try:
+            (settings.files_dir / name).unlink(missing_ok=True)
+        except OSError:
+            pass  # a missing/locked file shouldn't fail the delete
+
+    return {"ok": True, "id": app_id}
+
+
 @router.get("/{app_id}/media/{media_id}")
 def get_media(app_id: int, media_id: int, db: Session = Depends(get_db)):
     """Serve a screenshot or video file."""

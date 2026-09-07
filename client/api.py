@@ -113,6 +113,14 @@ class ApiClient:
             raise ApiError(self._detail(resp))
         return resp.json()
 
+    def delete_app(self, app_id: int) -> None:
+        resp = httpx.delete(
+            f"{self.base_url}/apps/{app_id}",
+            headers=self._headers(), timeout=30,
+        )
+        if resp.status_code >= 400:
+            raise ApiError(self._detail(resp))
+
     def add_media(
         self, app_id: int,
         image_paths: list[str] | None = None,
