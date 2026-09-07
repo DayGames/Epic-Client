@@ -15,7 +15,7 @@ def _app_dir() -> Path:
 # For an .exe you can send to other people this MUST be a public URL
 # (e.g. your Railway domain) — localhost only works on the machine running the server.
 # Priority: EPIC_STORE_SERVER env var  ->  a server.txt next to the app  ->  this default.
-_DEFAULT_SERVER = "http://127.0.0.1:8000"   # <-- replace with your Railway URL, then rebuild
+_DEFAULT_SERVER = "https://epic-client-production.up.railway.app"   # public Railway backend
 
 
 def _resolve_server_url() -> str:
