@@ -4,8 +4,44 @@ Run from the client/ folder (with the backend already running):
     python main.py
 """
 import sys
+import traceback
+from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+_CRASH_LOG = Path.home() / ".epicstore" / "client.log"
+
+
+def _log_crash(exc_type, exc, tb) -> str:
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    try:
+        _CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _CRASH_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} =====\n{text}")
+    except Exception:
+        pass
+    return text
+
+
+def _install_crash_logging():
+    """The windowed .exe has no console, so an unhandled exception would kill it
+    silently. Log it and show a dialog instead — on the main thread and in QThreads."""
+    def hook(exc_type, exc, tb):
+        text = _log_crash(exc_type, exc, tb)
+        try:
+            QMessageBox.critical(None, "Epic Store — something went wrong",
+                                 f"{exc_type.__name__}: {exc}\n\nDetails saved to:\n{_CRASH_LOG}")
+        except Exception:
+            pass
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = hook
+    try:
+        import threading
+        threading.excepthook = lambda a: _log_crash(a.exc_type, a.exc_value, a.exc_traceback)
+    except Exception:
+        pass
 
 from api import ApiClient
 from config import save_session, load_session, clear_session
@@ -101,6 +137,7 @@ def parse_deeplink(argv) -> int | None:
 
 
 def main():
+    _install_crash_logging()
     _set_windows_app_id()
     _register_protocol()
     qt_app = QApplication(sys.argv)

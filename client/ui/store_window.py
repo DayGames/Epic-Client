@@ -110,6 +110,23 @@ class DownloadWorker(QThread):
         return folder
 
 
+class UploadWorker(QThread):
+    """Runs a blocking API call (upload / edit / add-DLC) off the UI thread so
+    the window never freezes during a large upload to a remote server."""
+    done = Signal(object)   # result of the callable
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            self.done.emit(self._fn())
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
 class StoreWindow(FramelessWindow):
     def __init__(self, api: ApiClient, username: str, on_logout=None):
         super().__init__("Epic Store")
@@ -117,6 +134,8 @@ class StoreWindow(FramelessWindow):
         self.username = username
         self.on_logout = on_logout
         self._worker = None
+        self._task = None        # background upload/edit worker (kept from GC)
+        self._busy = None        # modal "please wait" dialog while a task runs
         self.current_app: dict | None = None
         self.apps: list[dict] = []
         self.downloaded: dict[int, str] = self._load_installed()  # persisted across runs
@@ -600,33 +619,69 @@ class StoreWindow(FramelessWindow):
         if not dlg.exec():
             return
         v = dlg.values()
-        try:
-            self.api.upload_app(v["name"], v["description"], v["zip"],
-                                v["icon"], v["images"], v["videos"])
-        except ApiError as e:
-            QMessageBox.warning(self, "Upload failed", str(e)); return
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e)); return
-        QMessageBox.information(self, "Uploaded", f"'{v['name']}' is now in the store.")
+        self._run_task(
+            lambda: self.api.upload_app(v["name"], v["description"], v["zip"],
+                                        v["icon"], v["images"], v["videos"]),
+            busy="Uploading game… large files can take a while.",
+            on_done=lambda _r: self._upload_done(v["name"]),
+            fail_title="Upload failed",
+        )
+
+    def _upload_done(self, name: str):
+        QMessageBox.information(self, "Uploaded", f"'{name}' is now in the store.")
         self._banner_cache.clear()
         self.load_apps()
+
+    # ---------- background task plumbing ----------
+    def _run_task(self, fn, busy: str, on_done, fail_title: str):
+        """Run a blocking API call on a worker thread with a modal busy dialog,
+        so the window stays responsive instead of freezing (and looking crashed)."""
+        if self._task and self._task.isRunning():
+            QMessageBox.information(self, "Please wait", "Another upload is still running.")
+            return
+        self._begin_busy(busy)
+        self._task = UploadWorker(fn)
+        self._task.done.connect(lambda res: (self._end_busy(), on_done(res)))
+        self._task.failed.connect(
+            lambda msg: (self._end_busy(), QMessageBox.warning(self, fail_title, msg))
+        )
+        self._task.finished.connect(lambda: setattr(self, "_task", None))
+        self._task.start()
+
+    def _begin_busy(self, text: str):
+        from PySide6.QtWidgets import QProgressDialog
+        self._busy = QProgressDialog(text, None, 0, 0, self)   # 0..0 = indeterminate
+        self._busy.setWindowTitle("Please wait")
+        self._busy.setCancelButton(None)
+        self._busy.setWindowModality(Qt.ApplicationModal)
+        self._busy.setMinimumDuration(0)
+        self._busy.setAutoClose(False)
+        self._busy.setAutoReset(False)
+        self._busy.show()
+
+    def _end_busy(self):
+        if self._busy is not None:
+            self._busy.close()
+            self._busy = None
 
     def edit(self, app: dict):
         dlg = UploadDialog(self, mode="edit", app=app)
         if not dlg.exec():
             return
         v = dlg.values()
-        try:
+
+        def work():
             self.api.edit_app(app["id"], v["name"], v["description"])
             if v["images"] or v["videos"]:
                 self.api.add_media(app["id"], v["images"], v["videos"])
-        except ApiError as e:
-            QMessageBox.warning(self, "Edit failed", str(e)); return
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e)); return
-        QMessageBox.information(self, "Saved", "Your changes were saved.")
-        self._banner_cache.pop(app["id"], None)
-        self.load_apps()
+
+        def finished(_r):
+            QMessageBox.information(self, "Saved", "Your changes were saved.")
+            self._banner_cache.pop(app["id"], None)
+            self.load_apps()
+
+        self._run_task(work, busy="Saving changes…", on_done=finished,
+                       fail_title="Edit failed")
 
     def add_dlc(self, app: dict):
         name, ok = QInputDialog.getText(self, "DLC name", "Name of the DLC:")
@@ -637,11 +692,14 @@ class StoreWindow(FramelessWindow):
             return
         if not path.lower().endswith(".zip"):
             QMessageBox.warning(self, "Zip required", "DLC must be a .zip file."); return
-        try:
-            self.api.add_dlc(app["id"], name.strip(), path)
-        except ApiError as e:
-            QMessageBox.warning(self, "DLC upload failed", str(e)); return
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e)); return
-        QMessageBox.information(self, "DLC added", f"'{name}' was added to {app['name']}.")
-        self.load_apps()
+        dlc_name = name.strip()
+        self._run_task(
+            lambda: self.api.add_dlc(app["id"], dlc_name, path),
+            busy=f"Uploading DLC '{dlc_name}'…",
+            on_done=lambda _r: (
+                QMessageBox.information(self, "DLC added",
+                                        f"'{dlc_name}' was added to {app['name']}."),
+                self.load_apps(),
+            ),
+            fail_title="DLC upload failed",
+        )
